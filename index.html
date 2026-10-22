@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0b0b13">
+  <meta name="description" content="Together — уютная онлайн-комната для совместного просмотра YouTube и видео с друзьями.">
+  <title>Together — ваш кинозал на двоих</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/socket.io/socket.io.js" defer></script>
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <svg class="svg-sprites" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="m8 5 12 7-12 7V5Z" fill="currentColor"/></symbol>
+    <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.07 0l2.12-2.12a5 5 0 0 0-7.07-7.07L10.9 5.02M14 11a5 5 0 0 0-7.07 0l-2.12 2.12a5 5 0 1 0 7.07 7.07L13.1 19"/></symbol>
+    <symbol id="i-users" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8ZM22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></symbol>
+    <symbol id="i-send" viewBox="0 0 24 24"><path d="m22 2-7 20-4-9-9-4L22 2ZM22 2 11 13"/></symbol>
+    <symbol id="i-monitor" viewBox="0 0 24 24"><rect width="18" height="13" x="3" y="3" rx="2"/><path d="M8 21h8m-4-5v5"/></symbol>
+    <symbol id="i-expand" viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3m13-5h3a2 2 0 0 1 2 2v3M3 16v3a2 2 0 0 0 2 2h3m13-5v3a2 2 0 0 1-2 2h-3"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 5 5L20 7"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+    <symbol id="i-music" viewBox="0 0 24 24"><path d="M9 18V5l12-2v13M9 9l12-2M9 18a3 3 0 1 1-6 0 3 3 0 0 1 6 0Zm12-2a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z"/></symbol>
+    <symbol id="i-share" viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="16" rx="3"/><path d="m8 12 3 3 5-6"/></symbol>
+    <symbol id="i-spark" viewBox="0 0 24 24"><path d="m12 3 1.9 6.1L20 11l-6.1 1.9L12 19l-1.9-6.1L4 11l6.1-1.9L12 3Zm7 14 .7 2.3L22 20l-2.3.7L19 23l-.7-2.3L16 20l2.3-.7L19 17Z"/></symbol>
+    <symbol id="i-heart" viewBox="0 0 24 24"><path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1.1-1.1a5.5 5.5 0 1 0-7.8 7.8L12 20l8.8-8.6a5.5 5.5 0 0 0 0-7.8Z"/></symbol>
+    <symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M9 9a3 3 0 0 1 6 0c0 2-3 2-3 4m0 4h.01"/></symbol>
+  </svg>
+  <div class="page-glow page-glow-one"></div><div class="page-glow page-glow-two"></div>
+  <div class="site-shell">
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="Together — главная">
+        <span class="brand-mark"><svg class="icon solid"><use href="#i-play"></use></svg></span>
+        <span>together<span class="brand-dot">.</span></span>
+      </a>
+      <div class="top-right">
+        <span class="header-tag"><span class="green-dot"></span><span id="statusText">Подключение...</span></span>
+        <span class="header-divider"></span>
+        <button type="button" id="headerInvite" class="header-invite" disabled><svg class="icon"><use href="#i-link"></use></svg> Пригласить друга</button>
+      </div>
+    </header>
+
+    <main class="main">
+      <section class="heading">
+        <div>
+          <div class="eyebrow"><span class="eyebrow-line"></span> ВРЕМЯ ДЛЯ ВАС ДВОИХ <span class="star">✳</span></div>
+          <h1>Фильмы ближе, <em>даже на расстоянии.</em></h1>
+          <p class="subtitle">Ты в Польше, она в Казахстане? Неважно. Включайте любимое видео, общайтесь и будьте на одной волне.</p>
+        </div>
+        <div class="room-chip" id="roomChip"><svg class="icon"><use href="#i-users"></use></svg><span>Комната <strong id="roomCode">—</strong></span><span class="chip-people" id="headPeopleCount">0 онлайн</span></div>
+      </section>
+
+      <section class="watch-layout" aria-label="Совместный просмотр">
+        <div class="watch-column">
+          <div class="source-toolbar">
+            <div class="source-input-box"><svg class="icon"><use href="#i-link"></use></svg><input id="videoUrl" type="url" placeholder="Вставь ссылку на YouTube или видео .mp4…" autocomplete="off" spellcheck="false" aria-label="Ссылка на видео"></div>
+            <button id="loadVideo" class="btn btn-primary" type="button"><svg class="icon solid"><use href="#i-play"></use></svg><span>Смотреть</span></button>
+            <button id="screenShare" class="btn btn-outline" type="button" title="Показать вкладку с фильмом"><svg class="icon"><use href="#i-monitor"></use></svg><span>Трансляция</span></button>
+          </div>
+          <div id="inputHint" class="input-hint" role="status"></div>
+
+          <div class="cinema-frame" id="cinemaFrame">
+            <div class="player-badge" id="playerBadge"><span class="red-dot"></span> ВАШ КИНОЗАЛ</div>
+            <div id="emptyPlayer" class="empty-player">
+              <div class="empty-orbit orbit-outer"><div class="empty-orbit orbit-inner"><span class="big-play"><svg class="icon solid"><use href="#i-play"></use></svg></span></div></div>
+              <div class="empty-copy"><div class="small-overline">THE SHOW STARTS HERE</div><h2>Твой вечер.<br><span>Ваша история.</span></h2><p>Вставь ссылку на видео сверху — и пусть магия начнётся.</p></div>
+              <div class="cinema-spark spark-a">✦</div><div class="cinema-spark spark-b">✧</div><div class="cinema-spark spark-c">✳</div>
+            </div>
+            <div id="youtubeWrap" class="player-media hidden"><div id="ytPlayer"></div></div>
+            <video id="directPlayer" class="player-media hidden" controls playsinline preload="metadata"></video>
+            <video id="screenPlayer" class="player-media hidden" playsinline autoplay controls></video>
+            <div id="screenWaiting" class="screen-waiting hidden"><span class="spinner"></span><h2>Ждём трансляцию…</h2><p>Скоро здесь появится экран твоего друга.</p></div>
+            <div id="videoUnlock" class="video-unlock hidden"><button id="unlockPlay" type="button" class="btn btn-primary"><svg class="icon solid"><use href="#i-play"></use></svg> Включить воспроизведение</button><span>Браузер может блокировать автоматический запуск</span></div>
+            <div class="frame-bottom-gradient"></div>
+          </div>
+
+          <div class="under-player">
+            <div class="video-details"><span class="watch-now-icon"><svg class="icon"><use href="#i-spark"></use></svg></span><div><div id="nowWatching" class="watch-title">Выбираем, что посмотреть</div><div id="watchSub" class="watch-sub">Самый лучший фильм — тот, что вместе</div></div></div>
+            <div class="under-actions"><span id="syncStatus" class="sync-status"><span class="green-dot"></span> Синхронизация включена</span><button id="fullScreen" class="icon-btn" type="button" title="Полный экран"><svg class="icon"><use href="#i-expand"></use></svg></button></div>
+          </div>
+
+          <div class="invite-strip"><span class="invite-icon"><svg class="icon"><use href="#i-heart"></use></svg></span><div><strong>Лучше вместе, даже если далеко.</strong><span>Отправь ссылку — друг присоединится без регистрации.</span></div><button id="copyLink" class="btn btn-quiet" type="button" disabled><svg class="icon"><use href="#i-link"></use></svg> Копировать ссылку</button></div>
+          <div class="helper-copy"><svg class="icon"><use href="#i-help"></use></svg> Для фильмов на других сайтах используй <strong>«Трансляция»</strong>. <button id="openGuide" class="guide-link" type="button">Как показать фильм со звуком?</button></div>
+        </div>
+
+        <aside class="side-panel">
+          <div class="side-head"><div><span class="side-overline">ВАША КОМНАТА</span><h2>Мы здесь <span>♡</span></h2></div><span class="live-pill"><span class="green-dot"></span> LIVE</span></div>
+          <div class="members-list" id="membersList"><div class="member-skeleton"><span class="member-avatar">?</span><span>Ждём подключения...</span></div></div>
+          <div class="chat-divider"><span></span> ЧАТ В РЕАЛЬНОМ ВРЕМЕНИ <span></span></div>
+          <div class="chat-scroll" id="chatScroll"><div id="chatMessages" class="chat-messages"><div class="chat-empty"><div class="chat-empty-icon">💬</div><strong>Тут начинается разговор</strong><p>Обсуждайте каждую сцену, не выходя из комнаты.</p></div></div></div>
+          <form class="chat-form" id="chatForm"><input id="chatInput" name="message" type="text" placeholder="Написать сообщение…" maxlength="800" autocomplete="off" aria-label="Сообщение в чат" disabled><button id="chatSend" type="submit" aria-label="Отправить сообщение" disabled><svg class="icon"><use href="#i-send"></use></svg></button></form>
+          <div class="chat-foot">Только вы и те, у кого есть ссылка <span>✦</span></div>
+        </aside>
+      </section>
+      <footer class="site-footer"><span>together<span class="brand-dot">.</span> — расстояние не помеха.</span><span>Создано для уютных вечеров <span class="footer-heart">♥</span></span></footer>
+    </main>
+  </div>
+
+  <div id="joinOverlay" class="join-overlay" role="dialog" aria-modal="true" aria-labelledby="joinTitle">
+    <div class="join-card"><div class="join-flares"></div><div class="join-brand"><span class="brand-mark"><svg class="icon solid"><use href="#i-play"></use></svg></span>together<span class="brand-dot">.</span></div>
+      <div class="join-tag">♡ ВАШ МАЛЕНЬКИЙ КИНОТЕАТР</div><h2 id="joinTitle">Расстояние —<br><em>не помеха.</em></h2><p id="joinDescription">Смотрите фильмы и YouTube одновременно, будто сидите рядом на одном диване.</p>
+      <form id="joinForm"><label for="nickInput">КАК ТЕБЯ ЗОВУТ?</label><input id="nickInput" type="text" maxlength="28" placeholder="Например, Денис" required autocomplete="nickname"><button type="submit" class="btn btn-primary join-submit"><svg class="icon solid"><use href="#i-play"></use></svg><span id="joinAction">Создать комнату</span><span class="arrow">→</span></button></form>
+      <div class="join-features"><span><svg class="icon"><use href="#i-check"></use></svg> Бесплатно</span><span><svg class="icon"><use href="#i-check"></use></svg> Без регистрации</span><span><svg class="icon"><use href="#i-check"></use></svg> Онлайн</span></div>
+      <div id="joinError" class="join-error"></div>
+    </div>
+  </div>
+  <div id="guideOverlay" class="guide-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="guideTitle">
+    <section class="guide-card">
+      <button type="button" id="closeGuide" class="guide-close" aria-label="Закрыть инструкцию">×</button>
+      <div class="guide-tag">ПРОСМОТР С ДРУГИХ САЙТОВ</div>
+      <h2 id="guideTitle">Фильм с любого сайта, <em>который разрешает трансляцию</em></h2>
+      <ol>
+        <li>Открой сайт с фильмом в <strong>Google Chrome или Microsoft Edge на компьютере</strong>.</li>
+        <li>В нашей комнате нажми <strong>«Трансляция»</strong>.</li>
+        <li>Выбери вкладку с фильмом и включи <strong>«Поделиться аудио вкладки»</strong>.</li>
+        <li>Нажми <strong>«Поделиться»</strong>. Друг увидит видео и услышит звук.</li>
+      </ol>
+      <p class="guide-note">Важное ограничение: некоторые сервисы с DRM-защитой показывают чёрный экран или блокируют звук. Мы не обходим защиту. Если связь между странами не устанавливается, серверу нужен TURN (см. README).</p>
+      <button type="button" id="guideDone" class="btn btn-primary">Понятно</button>
+    </section>
+  </div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+</body>
+</html>
