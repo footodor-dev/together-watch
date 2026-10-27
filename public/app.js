@@ -23,17 +23,27 @@ let iceServers = [{ urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun1.
 let lastYouTubeSample = null;
 let toastTimer = null;
 let sharingBusy = false;
+let vimeoPlayer = null;
+let vimeoReady = false;
+let vimeoId = '';
+let vimeoPromise = null;
+let clockOffset = 0;
+let clockCalibrated = false;
+let draggingTimeline = false;
+let unread = 0;
+let lastVimeoSeekAt = 0;
 
 const urlInput = $('videoUrl');
 const directPlayer = $('directPlayer');
 const screenPlayer = $('screenPlayer');
 const chatScroll = $('chatScroll');
 const youtubeWrap = $('youtubeWrap');
+const vimeoWrap = $('vimeoWrap');
 
 $('nickInput').value = nickname;
 if (roomId) {
-  $('joinTitle').innerHTML = 'Ваш вечер —<br><em>по приглашению.</em>';
-  $('joinDescription').textContent = `Тебя пригласили в комнату ${roomId}. Введи имя, чтобы присоединиться.`;
+  $('joinTitle').innerHTML = 'Вход в<br><em>комнату просмотра.</em>';
+  $('joinDescription').textContent = `Комната ${roomId}. Укажите имя, чтобы присоединиться к просмотру.`;
   $('joinAction').textContent = 'Присоединиться';
 }
 
@@ -81,21 +91,32 @@ function parseSource(input) {
   if (id && /^[a-zA-Z0-9_-]{11}$/.test(id)) return { kind: 'youtube', videoId: id };
   try {
     const u = new URL(trimmed);
+    if (['vimeo.com','www.vimeo.com','player.vimeo.com'].includes(u.hostname.toLowerCase())) {
+      const match = u.pathname.match(/(?:^\/video\/|^\/)([0-9]{6,14})(?:\/|$)/);
+      if (match) return { kind: 'vimeo', videoId: match[1] };
+    }
+  } catch (_) {}
+  try {
+    const u = new URL(trimmed);
     if (['https:', 'http:'].includes(u.protocol) && /\.(mp4|webm|ogg|m3u8)(?:$|[?#])/i.test(u.href)) return { kind: 'direct', url: u.href };
   } catch (_) { /* handled below */ }
   return null;
 }
 function calculatedTime(media) {
-  return Math.max(0, Number(media.position || 0) + (media.playing ? (Date.now() - media.updatedAt) / 1000 : 0));
+  return Math.max(0, Number(media.position || 0) + (media.playing ? (Date.now() + clockOffset - media.updatedAt) / 1000 : 0));
 }
 function setActivePlayer(kind) {
   $('emptyPlayer').classList.toggle('hidden', kind !== 'none');
   youtubeWrap.classList.toggle('hidden', kind !== 'youtube');
+  vimeoWrap.classList.toggle('hidden', kind !== 'vimeo');
   directPlayer.classList.toggle('hidden', kind !== 'direct');
   screenPlayer.classList.toggle('hidden', kind !== 'screen');
   $('screenWaiting').classList.toggle('hidden', kind !== 'waiting');
-  $('playerBadge').classList.toggle('hidden', kind === 'youtube' || kind === 'direct');
-  if (kind !== 'youtube' && kind !== 'direct') $('videoUnlock').classList.add('hidden');
+  $('playerBadge').classList.toggle('hidden', kind === 'youtube' || kind === 'vimeo' || kind === 'direct');
+  if (kind !== 'youtube' && kind !== 'vimeo' && kind !== 'direct') $('videoUnlock').classList.add('hidden');
+  $('transport').classList.toggle('disabled', !['youtube','vimeo','direct'].includes(kind));
+  $('globalPlay').disabled = !['youtube','vimeo','direct'].includes(kind);
+  $('timelineSeek').disabled = !['youtube','vimeo','direct'].includes(kind);
 }
 function suppressControls(ms = 1500) { ignoringPlaybackUntil = Math.max(ignoringPlaybackUntil, Date.now() + ms); }
 function ignoreControls() { return Date.now() < ignoringPlaybackUntil; }
@@ -106,6 +127,7 @@ function stopVideoSources() {
   directPlayer.load();
   if (hlsInstance) { hlsInstance.destroy(); hlsInstance = null; }
   if (ytPlayer && ytReady) { try { ytPlayer.stopVideo(); } catch (_) {} }
+  if (vimeoPlayer) { vimeoPlayer.destroy().catch(() => {}); vimeoPlayer = null; vimeoReady = false; vimeoId = ''; vimeoPromise = null; $('vimeoPlayer').replaceChildren(); }
   lastYouTubeSample = null;
 }
 
@@ -153,6 +175,40 @@ async function loadYoutube(media) {
     setTimeout(() => { if (currentMedia?.kind === 'youtube' && currentMedia.videoId === media.videoId) syncPlayback(currentMedia, true); }, 500);
   } catch (e) { hint(e.message); toast('Ошибка загрузки YouTube'); }
 }
+async function loadVimeo(media) {
+  try {
+    if (!window.Vimeo?.Player) {
+      if (!vimeoPromise) vimeoPromise = new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        script.src = 'https://player.vimeo.com/api/player.js';
+        script.onload = resolve;
+        script.onerror = () => reject(new Error('Не удалось загрузить Vimeo Player SDK.'));
+        document.head.appendChild(script);
+      });
+      await vimeoPromise;
+    }
+    if (currentMedia?.revision !== media.revision || currentMedia?.kind !== 'vimeo') return;
+    vimeoId = media.videoId;
+    vimeoPlayer = new Vimeo.Player('vimeoPlayer', { id: Number(media.videoId), responsive: true, autopause: false, playsinline: true });
+    await vimeoPlayer.ready();
+    if (currentMedia?.revision !== media.revision) return;
+    vimeoReady = true;
+    suppressControls(1800);
+    vimeoPlayer.on('play', async () => {
+      if (!ignoreControls() && currentMedia?.kind === 'vimeo' && !currentMedia.playing) sendControl('play', await vimeoPlayer.getCurrentTime());
+    });
+    vimeoPlayer.on('pause', async () => {
+      if (!ignoreControls() && currentMedia?.kind === 'vimeo' && currentMedia.playing) sendControl('pause', await vimeoPlayer.getCurrentTime());
+    });
+    vimeoPlayer.on('seeked', data => {
+      if (!ignoreControls() && currentMedia?.kind === 'vimeo' && Date.now() - lastVimeoSeekAt > 350) {
+        lastVimeoSeekAt = Date.now();
+        sendControl('seek', data.seconds);
+      }
+    });
+    syncPlayback(currentMedia, true);
+  } catch (e) { hint('Vimeo не загрузился. Возможно, автор запретил встраивание видео.'); console.warn(e); }
+}
 function loadHls(url) {
   if (directPlayer.canPlayType('application/vnd.apple.mpegurl')) { directPlayer.src = url; return; }
   if (window.Hls?.isSupported()) {
@@ -182,36 +238,48 @@ function loadDirect(media) {
 }
 function showUnlock() { $('videoUnlock').classList.remove('hidden'); }
 function syncPlayback(media, force = false) {
-  if (!media || !['youtube', 'direct'].includes(media.kind)) return;
-  suppressControls(force ? 1750 : 1100);
+  if (!media || !['youtube', 'vimeo', 'direct'].includes(media.kind)) return;
   const target = calculatedTime(media);
   if (media.kind === 'youtube') {
     if (!ytReady || loadedYoutubeId !== media.videoId) return;
     try {
       const current = ytPlayer.getCurrentTime();
-      if (Number.isFinite(current) && Math.abs(current - target) > (force ? 1 : 2.4)) ytPlayer.seekTo(target, true);
+      if (Number.isFinite(current) && Math.abs(current - target) > (force ? .55 : 1.25)) { suppressControls(950); ytPlayer.seekTo(target, true); }
       const status = ytPlayer.getPlayerState();
       if (media.playing && status !== YT.PlayerState.PLAYING && status !== YT.PlayerState.BUFFERING) {
-        ytPlayer.playVideo();
+        suppressControls(950); ytPlayer.playVideo();
         setTimeout(() => {
           if (currentMedia?.kind === 'youtube' && currentMedia.playing && ytPlayer.getPlayerState() !== YT.PlayerState.PLAYING && ytPlayer.getPlayerState() !== YT.PlayerState.BUFFERING) showUnlock();
         }, 1600);
-      } else if (!media.playing && (status === YT.PlayerState.PLAYING || status === YT.PlayerState.BUFFERING)) ytPlayer.pauseVideo();
+      } else if (!media.playing && (status === YT.PlayerState.PLAYING || status === YT.PlayerState.BUFFERING)) { suppressControls(950); ytPlayer.pauseVideo(); }
     } catch (_) { /* an ad or delayed player may not be ready */ }
+  } else if (media.kind === 'vimeo') {
+    if (!vimeoReady || !vimeoPlayer || vimeoId !== media.videoId) return;
+    vimeoPlayer.getCurrentTime().then(position => {
+      if (Math.abs(position - target) > (force ? .6 : 1.1)) { suppressControls(1000); vimeoPlayer.setCurrentTime(target).catch(() => {}); }
+    }).catch(() => {});
+    vimeoPlayer.getPaused().then(paused => {
+      if (media.playing && paused) { suppressControls(950); vimeoPlayer.play().then(() => $('videoUnlock').classList.add('hidden')).catch(showUnlock); }
+      if (!media.playing && !paused) { suppressControls(950); vimeoPlayer.pause().catch(() => {}); }
+    }).catch(() => {});
   } else {
     if (directPlayer.readyState < 1) return;
-    if (Math.abs(directPlayer.currentTime - target) > (force ? .8 : 2.4)) {
-      try { directPlayer.currentTime = target; } catch (_) {}
+    if (Math.abs(directPlayer.currentTime - target) > (force ? .45 : .85)) {
+      try { suppressControls(850); directPlayer.currentTime = target; } catch (_) {}
     }
-    if (media.playing && directPlayer.paused) directPlayer.play().then(() => $('videoUnlock').classList.add('hidden')).catch(showUnlock);
-    if (!media.playing && !directPlayer.paused) directPlayer.pause();
+    if (media.playing && directPlayer.paused) { suppressControls(850); directPlayer.play().then(() => $('videoUnlock').classList.add('hidden')).catch(showUnlock); }
+    if (media.playing && !directPlayer.paused && !directPlayer.seeking) {
+      const drift = target - directPlayer.currentTime;
+      directPlayer.playbackRate = Math.abs(drift) < .12 ? 1 : (drift > 0 ? 1.06 : .94);
+    } else directPlayer.playbackRate = 1;
+    if (!media.playing && !directPlayer.paused) { suppressControls(850); directPlayer.pause(); }
   }
 }
 function sendControl(action, position) {
-  if (!joined || !currentMedia || !['youtube', 'direct'].includes(currentMedia.kind)) return;
+  if (!joined || !currentMedia || !['youtube', 'vimeo', 'direct'].includes(currentMedia.kind)) return;
   const time = Math.max(0, Number(position) || 0);
   socket.emit('media:control', { action, position: time, revision: currentMedia.revision });
-  currentMedia = { ...currentMedia, position: time, updatedAt: Date.now(), playing: action === 'play' ? true : action === 'pause' ? false : currentMedia.playing };
+  currentMedia = { ...currentMedia, position: time, updatedAt: Date.now() + clockOffset, playing: action === 'play' ? true : action === 'pause' ? false : currentMedia.playing };
   lastAppliedSyncAt = Date.now();
 }
 function onIncomingSync(media) {
@@ -224,14 +292,14 @@ function renderMembers(members) {
   const list = $('membersList');
   list.replaceChildren();
   for (const member of members) {
-    const row = addDom(list, 'div', 'member');
-    addDom(row, 'div', 'member-avatar', initials(member.name));
-    const info = addDom(row, 'div', 'member-info');
-    addDom(info, 'strong', '', member.name + (member.id === myId ? ' (ты)' : ''));
-    addDom(info, 'span', '', member.id === myId ? 'Организатор вечера ♡' : 'Смотрит с тобой');
-    addDom(row, 'span', 'member-online');
+    const el = addDom(list, 'div', 'rave-person');
+    const avatar = addDom(el, 'div', 'member-avatar', initials(member.name));
+    avatar.classList.toggle('is-me', member.id === myId);
+    addDom(el, 'span', 'rave-person-name', member.id === myId ? 'Ты' : member.name);
+    addDom(el, 'span', 'rave-person-online');
   }
   safeText($('headPeopleCount'), `${members.length} онлайн`);
+  safeText($('ravePeopleCount'), String(members.length));
 }
 function timeLabel(timestamp) { return new Date(timestamp).toLocaleTimeString('ru-RU', { hour:'2-digit', minute:'2-digit' }); }
 function renderMessages(messages) {
@@ -240,9 +308,8 @@ function renderMessages(messages) {
   chat.replaceChildren();
   if (!messages.length) {
     const empty = addDom(chat, 'div', 'chat-empty');
-    addDom(empty, 'div', 'chat-empty-icon', '💬');
-    addDom(empty, 'strong', '', 'Тут начинается разговор');
-    addDom(empty, 'p', '', 'Обсуждайте каждую сцену, не выходя из комнаты.');
+    addDom(empty, 'strong', '', 'together.');
+    addDom(empty, 'p', '', 'Сообщения участников появятся здесь.');
   } else {
     for (const m of messages) appendMessage(m);
   }
@@ -264,27 +331,35 @@ function appendMessage(message) {
 }
 function updateVideoLabels(media) {
   const labels = {
-    none: ['Выбираем, что посмотреть', 'Самый лучший фильм — тот, что вместе'],
-    youtube: ['Смотрим YouTube вместе', media.url],
-    direct: ['Смотрим видео вместе', media.url],
+    none: ['Выберите видео для просмотра', 'Видео пока не добавлено'],
+    youtube: ['YouTube', media.url],
+    direct: ['Видео', media.url],
+    vimeo: ['Vimeo', media.url],
     screen: ['Прямой эфир вашей комнаты', state?.shareOwner === myId ? 'Ты показываешь экран' : 'Друг показывает тебе свой экран']
   };
   const info = labels[media.kind] || labels.none;
   safeText($('nowWatching'), info[0]);
   safeText($('watchSub'), info[1]);
+  const pretty = media.kind === 'youtube' ? 'Видео YouTube' : media.kind === 'vimeo' ? 'Видео Vimeo' : media.kind === 'direct' ? 'Ваш фильм' : media.kind === 'screen' ? 'Прямая трансляция' : 'Пока ничего не играет';
+  safeText($('raveNowTitle'), media.kind === 'none' ? 'Выберите фильм или видео' : pretty);
+  safeText($('raveNowSource'), media.kind === 'none' ? 'Добавьте видео или пригласите участников' : media.kind === 'screen' ? 'Экран участника • эфир' : 'Пауза и перемотка общие для всех');
+  const now = document.querySelector('.rave-nowplaying');
+  now?.classList.toggle('rave-is-playing', media.kind !== 'none');
 }
 async function applyMediaState(nextState) {
   state = nextState;
   const media = nextState.media;
   if (nextState.id) roomId = nextState.id;
   $('roomCode').textContent = roomId;
+  $('stageViewers').textContent = String(nextState.members.length);
   const isNew = currentRevision !== media.revision;
   const previousKind = currentMedia?.kind;
   currentMedia = media;
   renderMembers(nextState.members);
   updateVideoLabels(media);
-  $('screenShare').querySelector('span').textContent = localStream ? 'Завершить эфир' : 'Трансляция';
+  $('screenShare').querySelector('span').textContent = localStream ? 'Завершить эфир' : 'Показ экрана';
   if (isNew) {
+    vimeoDuration = 0; vimeoDurationAt = 0;
     currentRevision = media.revision;
     stopVideoSources();
     $('videoUnlock').classList.add('hidden');
@@ -295,6 +370,7 @@ async function applyMediaState(nextState) {
     }
     if (media.kind === 'youtube') { setActivePlayer('youtube'); await loadYoutube(media); }
     else if (media.kind === 'direct') { setActivePlayer('direct'); loadDirect(media); }
+    else if (media.kind === 'vimeo') { setActivePlayer('vimeo'); await loadVimeo(media); }
     else if (media.kind === 'screen') {
       if (nextState.shareOwner === myId && localStream) {
         setActivePlayer('screen');
@@ -306,7 +382,7 @@ async function applyMediaState(nextState) {
         if (previousKind !== 'screen') socket.emit('rtc:viewer-ready');
       }
     } else setActivePlayer('none');
-  } else if (['youtube', 'direct'].includes(media.kind) && Date.now() - lastAppliedSyncAt > 1400) {
+  } else if (['youtube', 'vimeo', 'direct'].includes(media.kind) && Date.now() - lastAppliedSyncAt > 1400) {
     // Member join/leave events should not restart the player or override local playback.
     currentMedia = { ...currentMedia, ...media };
   }
@@ -322,9 +398,12 @@ function applyJoinResponse(res) {
   $('joinError').textContent = '';
   $('headerInvite').disabled = false;
   $('copyLink').disabled = false;
+  $('raveShare').disabled = false;
+  $('ravePrivacyInvite').disabled = false;
   $('chatInput').disabled = false;
   $('chatSend').disabled = false;
   setPresence(true);
+  calibrateClock();
   renderMessages(res.state.chat);
   applyMediaState(res.state);
   localStorage.setItem('together:nickname', nickname);
@@ -340,6 +419,7 @@ function joinCurrentRoom() {
 
 socket.on('connect', () => {
   setPresence(true);
+  calibrateClock();
   if (roomId && nickname && (joined || $('joinOverlay').classList.contains('hidden'))) joinCurrentRoom();
 });
 socket.on('disconnect', () => {
@@ -404,7 +484,7 @@ async function loadVideoLink() {
   if (!joined) return toast('Сначала войди в комнату.');
   const parsed = parseSource(urlInput.value);
   if (!parsed) {
-    hint('Для YouTube подойдёт обычная ссылка. Для другого сайта нужен прямой MP4/WebM/HLS или кнопка «Трансляция» (показ вкладки).');
+    hint('Поддерживаются YouTube, Vimeo и прямые ссылки .mp4/.webm/.m3u8. Для киносайта открой фильм и используй «Показ экрана».');
     return;
   }
   $('loadVideo').disabled = true;
@@ -431,6 +511,7 @@ $('unlockPlay').addEventListener('click', () => {
     ytPlayer.playVideo();
     if (!currentMedia.playing) sendControl('play', ytPlayer.getCurrentTime());
   } else if (currentMedia?.kind === 'direct') directPlayer.play().catch(() => showUnlock());
+  else if (currentMedia?.kind === 'vimeo' && vimeoReady) vimeoPlayer.play().catch(showUnlock);
 });
 
 $('chatForm').addEventListener('submit', e => {
@@ -511,7 +592,7 @@ function stopLocalShare(announce = true) {
   }
   closePeers();
   screenPlayer.srcObject = null;
-  $('screenShare').querySelector('span').textContent = 'Трансляция';
+  $('screenShare').querySelector('span').textContent = 'Показ экрана';
   if (announce && hadStream) socket.emit('share:stop');
 }
 $('screenShare').addEventListener('click', async () => {
@@ -540,8 +621,8 @@ $('screenShare').addEventListener('click', async () => {
 
 setInterval(() => {
   if (!joined || !socket.connected || !currentMedia) return;
-  if (['youtube','direct'].includes(currentMedia.kind)) socket.emit('media:get');
-}, 10000);
+  if (['youtube','vimeo','direct'].includes(currentMedia.kind)) socket.emit('media:get');
+}, 4000);
 // Detect deliberate YouTube timeline jumps without treating ordinary playback as a seek.
 setInterval(() => {
   if (!joined || currentMedia?.kind !== 'youtube' || !ytReady || ignoreControls()) { lastYouTubeSample = null; return; }
@@ -551,7 +632,7 @@ setInterval(() => {
   const now = Date.now();
   if (lastYouTubeSample) {
     const expectedAdvance = status === YT.PlayerState.PLAYING ? (now - lastYouTubeSample.at) / 1000 : 0;
-    if (Math.abs(position - lastYouTubeSample.position - expectedAdvance) > 3.8) sendControl('seek', position);
+    if (Math.abs(position - lastYouTubeSample.position - expectedAdvance) > 2.5) sendControl('seek', position);
   }
   lastYouTubeSample = { at: now, position };
 }, 800);
@@ -580,3 +661,213 @@ document.addEventListener('keydown', e => {
     else if (!e.shiftKey && document.activeElement === focusables[1]) { e.preventDefault(); focusables[0].focus(); }
   }
 });
+
+/* Rave-like controls: clock offset, transport bar, chat drawer and live reactions. */
+let clockCalibrating = false;
+async function calibrateClock() {
+  if (!socket.connected || clockCalibrating) return;
+  clockCalibrating = true;
+  const samples = [];
+  for (let i = 0; i < 4; i++) {
+    if (!socket.connected) break;
+    const start = Date.now();
+    const sample = await new Promise(resolve => {
+      socket.timeout(2200).emit('sync:clock', {}, (err, reply) => {
+        const end = Date.now();
+        if (err || !Number.isFinite(reply?.serverNow)) return resolve(null);
+        resolve({ offset: reply.serverNow - (start + end) / 2, rtt: end - start });
+      });
+    });
+    if (sample) samples.push(sample);
+  }
+  if (samples.length) {
+    // Prefer the least-delayed response, reducing cross-country latency bias.
+    samples.sort((a,b) => a.rtt - b.rtt);
+    clockOffset = samples[0].offset;
+    clockCalibrated = true;
+    if (joined) socket.emit('media:get');
+  }
+  clockCalibrating = false;
+}
+setInterval(() => { if (joined && socket.connected) calibrateClock(); }, 60000);
+function formatPosition(t) {
+  if (!Number.isFinite(t) || t < 0) return '00:00';
+  const n = Math.floor(t), s = String(n % 60).padStart(2,'0'), m = String(Math.floor(n / 60) % 60).padStart(2,'0');
+  return n >= 3600 ? `${Math.floor(n / 3600)}:${m}:${s}` : `${m}:${s}`;
+}
+let vimeoDuration = 0, vimeoDurationAt = 0;
+function updateTransport() {
+  const media = currentMedia;
+  if (!media || !['youtube','vimeo','direct'].includes(media.kind)) {
+    $('globalTimestamp').textContent = '00:00';
+    $('globalDuration').textContent = '00:00';
+    $('timelineSeek').value = 0;
+    $('timelineSeek').disabled = true;
+    $('globalPlay').disabled = true;
+    return;
+  }
+  let duration = 0;
+  if (media.kind === 'direct') duration = directPlayer.duration;
+  if (media.kind === 'youtube' && ytReady) {
+    try { duration = ytPlayer.getDuration(); } catch (_) {}
+  }
+  if (media.kind === 'vimeo' && vimeoReady && vimeoPlayer) {
+    duration = vimeoDuration;
+    if (Date.now() - vimeoDurationAt > 8000) {
+      vimeoDurationAt = Date.now();
+      vimeoPlayer.getDuration().then(n => { vimeoDuration = n; }).catch(() => {});
+    }
+  }
+  const time = Math.max(0, calculatedTime(media));
+  $('globalPlay').disabled = false;
+  $('globalPlay').innerHTML = media.playing ? '<svg class="icon solid"><use href="#i-pause"/></svg>' : '<svg class="icon solid"><use href="#i-play"/></svg>';
+  $('globalPlay').title = media.playing ? 'Пауза у всех' : 'Воспроизвести у всех';
+  $('globalDuration').textContent = Number.isFinite(duration) && duration > 0 ? formatPosition(duration) : '--:--';
+  const seekable = Number.isFinite(duration) && duration > 0;
+  $('timelineSeek').disabled = !seekable;
+  $('timelineSeek').max = seekable ? String(duration) : '100';
+  if (!draggingTimeline) {
+    $('globalTimestamp').textContent = formatPosition(time);
+    if (seekable) $('timelineSeek').value = String(Math.min(duration, time));
+  }
+  $('timelineSeek').style.setProperty('--progress', seekable ? `${Math.min(100,100 * time / duration)}%` : '0%');
+}
+setInterval(updateTransport, 350);
+async function positionForControl() {
+  if (!currentMedia) return 0;
+  try {
+    if (currentMedia.kind === 'direct' && directPlayer.readyState) return directPlayer.currentTime;
+    if (currentMedia.kind === 'youtube' && ytReady) return ytPlayer.getCurrentTime();
+    if (currentMedia.kind === 'vimeo' && vimeoReady) return await vimeoPlayer.getCurrentTime();
+  } catch (_) {}
+  return calculatedTime(currentMedia);
+}
+$('globalPlay').addEventListener('click', async () => {
+  if (!joined || !currentMedia || !['youtube','vimeo','direct'].includes(currentMedia.kind)) return;
+  const pause = currentMedia.playing;
+  const t = await positionForControl();
+  suppressControls(1100);
+  if (pause) {
+    if (currentMedia.kind === 'youtube' && ytReady) ytPlayer.pauseVideo();
+    if (currentMedia.kind === 'vimeo' && vimeoReady) vimeoPlayer.pause().catch(() => {});
+    if (currentMedia.kind === 'direct') directPlayer.pause();
+    sendControl('pause', t);
+  } else {
+    try {
+      if (currentMedia.kind === 'youtube' && ytReady) ytPlayer.playVideo();
+      if (currentMedia.kind === 'vimeo' && vimeoReady) await vimeoPlayer.play();
+      if (currentMedia.kind === 'direct') await directPlayer.play();
+      sendControl('play', t);
+    } catch (_) { showUnlock(); }
+  }
+  updateTransport();
+});
+$('timelineSeek').addEventListener('input', e => {
+  draggingTimeline = true;
+  $('globalTimestamp').textContent = formatPosition(Number(e.currentTarget.value));
+});
+$('timelineSeek').addEventListener('change', async e => {
+  const t = Number(e.currentTarget.value);
+  draggingTimeline = false;
+  if (!joined || !currentMedia || !Number.isFinite(t)) return;
+  suppressControls(1250);
+  try {
+    if (currentMedia.kind === 'youtube' && ytReady) ytPlayer.seekTo(t, true);
+    if (currentMedia.kind === 'vimeo' && vimeoReady) await vimeoPlayer.setCurrentTime(t);
+    if (currentMedia.kind === 'direct') directPlayer.currentTime = t;
+    sendControl('seek', t);
+  } catch (_) { toast('Не удалось перемотать этот источник'); }
+});
+// Chat is permanently visible beneath the player, including on iPhone.
+// Incoming messages scroll only when the viewer was already at the bottom.
+$('closeChat')?.addEventListener('click', () => $('chatInput').focus());
+$('chatToggle')?.addEventListener('click', () => $('chatInput').focus());
+$('headerVideo').addEventListener('click', () => {
+  sourceDetails.open = !sourceDetails.open;
+  if (sourceDetails.open) $('videoUrl').focus();
+});
+$('headerHow').addEventListener('click', () => $('openGuide').click());
+$('headerPeople').addEventListener('click', () => document.body.classList.toggle('participants-open'));
+$('mentionButton').addEventListener('click', () => {
+  const field = $('chatInput');
+  if (field.disabled) return toast('Сначала войдите в комнату');
+  const at = field.selectionStart ?? field.value.length;
+  field.setRangeText('@', at, field.selectionEnd ?? at, 'end');
+  field.focus();
+});
+$('emojiButton').addEventListener('click', () => {
+  document.body.classList.toggle('show-chat-reactions');
+});
+$('chatShare').addEventListener('click', () => {
+  if (!joined) return toast('Сначала войдите в комнату');
+  copyInvite();
+});
+let activeRecognition = null;
+$('voiceInput').addEventListener('click', () => {
+  if (!joined) return toast('Сначала войдите в комнату');
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRecognition) return toast('Голосовой ввод недоступен в этом браузере');
+  if (activeRecognition) { activeRecognition.stop(); return; }
+  const r = new SpeechRecognition();
+  activeRecognition = r;
+  r.lang = navigator.language || 'ru-RU';
+  r.interimResults = false;
+  r.maxAlternatives = 1;
+  r.onresult = e => {
+    const transcript = e.results[0]?.[0]?.transcript?.trim();
+    if (transcript) {
+      $('chatInput').value = [$('chatInput').value.trim(), transcript].filter(Boolean).join(' ');
+      $('chatInput').focus();
+    }
+  };
+  r.onerror = () => toast('Не удалось распознать речь. Проверьте доступ к микрофону.');
+  r.onend = () => { activeRecognition = null; $('voiceInput').classList.remove('listening'); };
+  try { r.start(); $('voiceInput').classList.add('listening'); }
+  catch { activeRecognition = null; }
+});
+for (const btn of document.querySelectorAll('.reactions [data-reaction]')) {
+  btn.addEventListener('click', () => document.body.classList.remove('show-chat-reactions'));
+}
+$('raveShare').addEventListener('click', copyInvite);
+$('ravePrivacyInvite').addEventListener('click', copyInvite);
+const sourceDetails = $('sourceDetails');
+const smallDevice = window.matchMedia('(max-width: 800px)');
+sourceDetails.open = false;
+$('loadVideo').addEventListener('click', () => { sourceDetails.open = false; });
+$('chatInput').addEventListener('focus', () => {
+  // iOS sometimes scrolls the whole page rather than just the conversation.
+  if (smallDevice.matches) {
+    document.body.classList.add('chat-typing');
+    requestAnimationFrame(() => { chatScroll.scrollTop = chatScroll.scrollHeight; });
+  }
+});
+$('chatInput').addEventListener('blur', () => document.body.classList.remove('chat-typing'));
+function syncMobileViewport() {
+  const h = window.visualViewport?.height || window.innerHeight;
+  document.documentElement.style.setProperty('--rave-viewport', `${Math.round(h)}px`);
+}
+syncMobileViewport();
+window.visualViewport?.addEventListener('resize', syncMobileViewport);
+window.visualViewport?.addEventListener('scroll', syncMobileViewport);
+window.addEventListener('resize', syncMobileViewport);
+function renderReaction(emoji) {
+  const floating = document.createElement('span');
+  floating.className = 'flying-reaction';
+  floating.textContent = emoji;
+  floating.style.right = `${Math.round(Math.random() * 60)}px`;
+  $('reactionStage').appendChild(floating);
+  setTimeout(() => floating.remove(), 2700);
+}
+socket.on('reaction:new', data => { if (joined && ['❤️','😂','😮','🔥'].includes(data?.emoji)) renderReaction(data.emoji); });
+for (const btn of document.querySelectorAll('[data-reaction]')) {
+  btn.addEventListener('click', () => {
+    if (joined) socket.emit('reaction:send', { emoji: btn.dataset.reaction });
+  });
+}
+window.addEventListener('keydown', e => {
+  if (e.code !== 'Space' || !joined || !$('joinOverlay').classList.contains('hidden')) return;
+  if (['INPUT','TEXTAREA','BUTTON'].includes(document.activeElement?.tagName) || !guideOverlay.classList.contains('hidden')) return;
+  e.preventDefault();
+  $('globalPlay').click();
+});
+setActivePlayer('none');

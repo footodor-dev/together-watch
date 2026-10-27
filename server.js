@@ -63,6 +63,9 @@ function validMedia(data) {
   if (data.kind === 'youtube' && typeof data.videoId === 'string' && /^[a-zA-Z0-9_-]{11}$/.test(data.videoId)) {
     return { kind: 'youtube', videoId: data.videoId, url: `https://www.youtube.com/watch?v=${data.videoId}`, title: 'YouTube' };
   }
+  if (data.kind === 'vimeo' && typeof data.videoId === 'string' && /^[0-9]{6,14}$/.test(data.videoId)) {
+    return { kind: 'vimeo', videoId: data.videoId, url: `https://vimeo.com/${data.videoId}`, title: 'Vimeo' };
+  }
   if (data.kind === 'direct' && typeof data.url === 'string' && data.url.length <= 2000) {
     try {
       const parsed = new URL(data.url);
@@ -124,7 +127,7 @@ io.on('connection', socket => {
     const room = currentRoom();
     if (!room) return respond({ ok: false, error: 'Сначала войдите в комнату.' });
     const media = validMedia(payload);
-    if (!media) return respond({ ok: false, error: 'Нужна ссылка YouTube или прямая ссылка MP4, WebM, OGG, M3U8.' });
+    if (!media) return respond({ ok: false, error: 'Нужна ссылка YouTube, Vimeo либо прямая ссылка MP4, WebM, OGG, M3U8.' });
     stopShare(room);
     room.media = { ...media, position: 0, playing: false, updatedAt: Date.now(), revision: room.media.revision + 1 };
     room.touched = Date.now();
@@ -133,7 +136,7 @@ io.on('connection', socket => {
   });
   socket.on('media:control', payload => {
     const room = currentRoom();
-    if (!room || !['youtube', 'direct'].includes(room.media.kind)) return;
+    if (!room || !['youtube', 'vimeo', 'direct'].includes(room.media.kind)) return;
     if (!payload || !['play', 'pause', 'seek'].includes(payload.action)) return;
     if (payload.revision !== room.media.revision) return;
     const n = Number(payload.position);
@@ -142,11 +145,22 @@ io.on('connection', socket => {
     room.media.playing = payload.action === 'play' ? true : payload.action === 'pause' ? false : room.media.playing;
     room.media.updatedAt = Date.now();
     room.touched = Date.now();
-    socket.to(room.id).emit('media:sync', mediaSnapshot(room));
+    io.to(room.id).emit('media:sync', mediaSnapshot(room));
   });
+  // Round-trip clock calibration keeps devices with different local clocks in sync.
+  socket.on('sync:clock', (_data, respond = () => {}) => respond({ serverNow: Date.now() }));
   socket.on('media:get', () => {
     const room = currentRoom();
     if (room) socket.emit('media:sync', mediaSnapshot(room));
+  });
+  let lastReactionAt = 0;
+  socket.on('reaction:send', payload => {
+    const room = currentRoom();
+    if (!room || Date.now() - lastReactionAt < 450) return;
+    const emoji = String(payload?.emoji || '');
+    if (!['❤️', '😂', '😮', '🔥'].includes(emoji)) return;
+    lastReactionAt = Date.now();
+    io.to(room.id).emit('reaction:new', { emoji, at: Date.now() });
   });
   socket.on('chat:send', payload => {
     const room = currentRoom();
