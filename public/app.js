@@ -115,6 +115,7 @@ function setActivePlayer(kind) {
   $('playerBadge').classList.toggle('hidden', kind === 'youtube' || kind === 'vimeo' || kind === 'direct');
   if (kind !== 'youtube' && kind !== 'vimeo' && kind !== 'direct') $('videoUnlock').classList.add('hidden');
   $('transport').classList.toggle('disabled', !['youtube','vimeo','direct'].includes(kind));
+  $('videoSound').disabled = !['youtube','vimeo','direct','screen'].includes(kind);
   $('globalPlay').disabled = !['youtube','vimeo','direct'].includes(kind);
   $('timelineSeek').disabled = !['youtube','vimeo','direct'].includes(kind);
 }
@@ -139,7 +140,7 @@ function startYouTubeAPI() {
     window.onYouTubeIframeAPIReady = () => {
       ytPlayer = new YT.Player('ytPlayer', {
         width: '100%', height: '100%',
-        playerVars: { playsinline: 1, rel: 0, origin: location.origin },
+        playerVars: { playsinline: 1, rel: 0, controls: 0, disablekb: 1, fs: 0, origin: location.origin },
         events: {
           onReady: () => { ytReady = true; if (!settled) { settled = true; clearTimeout(t); resolve(ytPlayer); } },
           onStateChange: onYTStateChange,
@@ -189,7 +190,7 @@ async function loadVimeo(media) {
     }
     if (currentMedia?.revision !== media.revision || currentMedia?.kind !== 'vimeo') return;
     vimeoId = media.videoId;
-    vimeoPlayer = new Vimeo.Player('vimeoPlayer', { id: Number(media.videoId), responsive: true, autopause: false, playsinline: true });
+    vimeoPlayer = new Vimeo.Player('vimeoPlayer', { id: Number(media.videoId), responsive: true, autopause: false, playsinline: true, controls: false, fullscreen: false });
     await vimeoPlayer.ready();
     if (currentMedia?.revision !== media.revision) return;
     vimeoReady = true;
@@ -356,6 +357,7 @@ async function applyMediaState(nextState) {
   const previousKind = currentMedia?.kind;
   currentMedia = media;
   renderMembers(nextState.members);
+  syncVoicePeers(nextState.members);
   updateVideoLabels(media);
   $('screenShare').querySelector('span').textContent = localStream ? 'Завершить эфир' : 'Показ экрана';
   if (isNew) {
@@ -403,6 +405,7 @@ function applyJoinResponse(res) {
   $('chatInput').disabled = false;
   $('chatSend').disabled = false;
   setPresence(true);
+  if (microphoneStream) socket.emit('voice:status', { enabled: true });
   calibrateClock();
   renderMessages(res.state.chat);
   applyMediaState(res.state);
@@ -423,6 +426,7 @@ socket.on('connect', () => {
   if (roomId && nickname && (joined || $('joinOverlay').classList.contains('hidden'))) joinCurrentRoom();
 });
 socket.on('disconnect', () => {
+  voiceOnDisconnect();
   setPresence(false);
   if (localStream) toast('Потеряна связь. Попробуй обновить страницу перед новой трансляцией.');
 });
@@ -432,7 +436,7 @@ socket.on('media:sync', media => { if (joined) onIncomingSync(media); });
 socket.on('share:forced-stop', () => stopLocalShare(false));
 socket.on('share:ended', () => { closePeers(); screenPlayer.srcObject = null; screenStream = null; });
 socket.on('rtc:viewer-ready', ({viewerId}) => { if (localStream && viewerId) createOfferToViewer(viewerId); });
-socket.on('rtc:peer-left', ({peerId}) => closePeer(peerId));
+socket.on('rtc:peer-left', ({peerId}) => { closePeer(peerId); closeVoiceForMember(peerId); });
 socket.on('rtc:signal', async ({from, data}) => {
   try {
     if (data.type === 'offer') {
@@ -512,6 +516,7 @@ $('unlockPlay').addEventListener('click', () => {
     if (!currentMedia.playing) sendControl('play', ytPlayer.getCurrentTime());
   } else if (currentMedia?.kind === 'direct') directPlayer.play().catch(() => showUnlock());
   else if (currentMedia?.kind === 'vimeo' && vimeoReady) vimeoPlayer.play().catch(showUnlock);
+  else if (currentMedia?.kind === 'screen') screenPlayer.play().catch(showUnlock);
 });
 
 $('chatForm').addEventListener('submit', e => {
@@ -538,9 +543,30 @@ async function copyInvite() {
 $('headerInvite').addEventListener('click', copyInvite);
 $('copyLink').addEventListener('click', copyInvite);
 $('fullScreen').addEventListener('click', () => {
-  const el = $('cinemaFrame');
+  const el = document.querySelector('.watch-column');
   if (document.fullscreenElement) document.exitFullscreen();
   else el.requestFullscreen?.().catch(() => toast('Полноэкранный режим недоступен'));
+});
+
+
+// Only one visual timeline is shown for direct videos. Sound remains local to each participant.
+let videoMuted = false;
+function syncVideoSoundButton() {
+  $('videoSound').innerHTML = videoMuted ? '<svg class="icon"><use href="#i-volume-off"/></svg>' : '<svg class="icon"><use href="#i-volume"/></svg>';
+  $('videoSound').title = videoMuted ? 'Включить звук видео' : 'Выключить звук видео';
+  $('videoSound').setAttribute('aria-label', $('videoSound').title);
+  directPlayer.muted = videoMuted;
+  if (currentMedia?.kind === 'screen' && state?.shareOwner !== myId) screenPlayer.muted = videoMuted;
+  if (currentMedia?.kind === 'youtube' && ytReady) {
+    try { videoMuted ? ytPlayer.mute() : ytPlayer.unMute(); } catch (_) {}
+  }
+  if (currentMedia?.kind === 'vimeo' && vimeoReady) vimeoPlayer.setMuted(videoMuted).catch(() => {});
+}
+$('videoSound').addEventListener('click', () => { videoMuted = !videoMuted; syncVideoSoundButton(); });
+$('cleanTest').addEventListener('click', () => {
+  urlInput.value = 'https://uploads.video-commander.com/sample/BigBuckBunny.mp4';
+  urlInput.focus();
+  hint('Это тестовый MP4 без технических надписей. Нажми «Смотреть».');
 });
 
 function makePeer(peerId) {
@@ -552,10 +578,10 @@ function makePeer(peerId) {
     if (localStream || currentMedia?.kind !== 'screen') return;
     if (!screenStream) screenStream = evt.streams[0] || new MediaStream();
     if (!evt.streams[0]) screenStream.addTrack(evt.track);
-    screenPlayer.muted = false;
+    screenPlayer.muted = videoMuted;
     screenPlayer.srcObject = screenStream;
     setActivePlayer('screen');
-    screenPlayer.play().catch(() => toast('Нажми ▶ в плеере, чтобы запустить трансляцию.'));
+    screenPlayer.play().catch(() => showUnlock());
   };
   pc.onconnectionstatechange = () => {
     if (pc.connectionState === 'failed') hint('Трансляция не соединилась. В некоторых сетях необходим TURN-сервер.');
@@ -622,7 +648,7 @@ $('screenShare').addEventListener('click', async () => {
 setInterval(() => {
   if (!joined || !socket.connected || !currentMedia) return;
   if (['youtube','vimeo','direct'].includes(currentMedia.kind)) socket.emit('media:get');
-}, 4000);
+}, 2000);
 // Detect deliberate YouTube timeline jumps without treating ordinary playback as a seek.
 setInterval(() => {
   if (!joined || currentMedia?.kind !== 'youtube' || !ytReady || ignoreControls()) { lastYouTubeSample = null; return; }
@@ -802,29 +828,7 @@ $('chatShare').addEventListener('click', () => {
   if (!joined) return toast('Сначала войдите в комнату');
   copyInvite();
 });
-let activeRecognition = null;
-$('voiceInput').addEventListener('click', () => {
-  if (!joined) return toast('Сначала войдите в комнату');
-  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SpeechRecognition) return toast('Голосовой ввод недоступен в этом браузере');
-  if (activeRecognition) { activeRecognition.stop(); return; }
-  const r = new SpeechRecognition();
-  activeRecognition = r;
-  r.lang = navigator.language || 'ru-RU';
-  r.interimResults = false;
-  r.maxAlternatives = 1;
-  r.onresult = e => {
-    const transcript = e.results[0]?.[0]?.transcript?.trim();
-    if (transcript) {
-      $('chatInput').value = [$('chatInput').value.trim(), transcript].filter(Boolean).join(' ');
-      $('chatInput').focus();
-    }
-  };
-  r.onerror = () => toast('Не удалось распознать речь. Проверьте доступ к микрофону.');
-  r.onend = () => { activeRecognition = null; $('voiceInput').classList.remove('listening'); };
-  try { r.start(); $('voiceInput').classList.add('listening'); }
-  catch { activeRecognition = null; }
-});
+// The microphone button is wired to opt-in WebRTC voice chat below.
 for (const btn of document.querySelectorAll('.reactions [data-reaction]')) {
   btn.addEventListener('click', () => document.body.classList.remove('show-chat-reactions'));
 }
@@ -871,3 +875,186 @@ window.addEventListener('keydown', e => {
   $('globalPlay').click();
 });
 setActivePlayer('none');
+
+
+/* ==== Together 5: opt-in microphone-to-microphone voice chat ==== */
+let microphoneStream = null;
+let microphoneBusy = false;
+const voiceOutbound = new Map(); // peerId -> pc/session
+const voiceInbound = new Map();  // speakerId -> pc/session/audio
+const voiceEarlyCandidates = new Map();
+const voiceButton = $('voiceInput');
+const voiceLabel = $('micLabel');
+const voiceUnlock = $('enableVoiceAudio');
+function voiceSignal(target, data) { if (joined && socket.connected) socket.emit('voice:signal', { target, data }); }
+function voiceSession() { return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2,11)}`; }
+function voiceButtonState() {
+  const active = Boolean(microphoneStream);
+  voiceButton.classList.toggle('voice-on', active);
+  voiceButton.setAttribute('aria-pressed', String(active));
+  voiceButton.setAttribute('aria-label', active ? 'Выключить микрофон' : 'Включить микрофон');
+  voiceButton.title = active ? 'Выключить микрофон' : 'Включить микрофон и разрешить доступ';
+  voiceLabel.textContent = active ? 'Микрофон вкл.' : 'Микрофон выкл.';
+}
+function voiceCloseOutbound(peerId) {
+  const peer = voiceOutbound.get(peerId);
+  if (!peer) return;
+  voiceOutbound.delete(peerId);
+  try { peer.pc.close(); } catch (_) {}
+}
+function voiceCloseInbound(peerId) {
+  const peer = voiceInbound.get(peerId);
+  if (!peer) return;
+  voiceInbound.delete(peerId);
+  try { peer.pc.close(); } catch (_) {}
+  if (peer.audio) { peer.audio.pause(); peer.audio.srcObject = null; peer.audio.remove(); }
+  for (const key of voiceEarlyCandidates.keys()) if (key.startsWith(`${peerId}/`)) voiceEarlyCandidates.delete(key);
+  if (![...voiceInbound.values()].some(x => x.audio?.paused)) voiceUnlock.classList.add('hidden');
+}
+function closeVoiceForMember(peerId) {
+  voiceCloseOutbound(peerId);
+  voiceCloseInbound(peerId);
+}
+function voiceOnDisconnect() {
+  for (const peerId of [...voiceOutbound.keys()]) voiceCloseOutbound(peerId);
+  for (const peerId of [...voiceInbound.keys()]) voiceCloseInbound(peerId);
+}
+async function voiceFlush(peer) {
+  const pending = peer.pending.splice(0);
+  for (const candidate of pending) {
+    try { await peer.pc.addIceCandidate(candidate); } catch (e) { console.warn('Voice ICE:', e); }
+  }
+}
+function voicePeerConnection(target, lane, session, receiver = false) {
+  const pc = new RTCPeerConnection({ iceServers });
+  const peer = { pc, session, pending: [], audio: null };
+  pc.onicecandidate = evt => {
+    if (evt.candidate) voiceSignal(target, { type: 'candidate', lane, session, candidate: evt.candidate.toJSON() });
+  };
+  pc.onconnectionstatechange = () => {
+    if (pc.connectionState === 'failed') toast('Голосовая связь не установилась. Может потребоваться TURN-сервер.');
+  };
+  if (receiver) {
+    pc.ontrack = evt => {
+      let audio = peer.audio;
+      if (!audio) {
+        audio = document.createElement('audio');
+        audio.autoplay = true;
+        audio.playsInline = true;
+        audio.dataset.voiceFrom = target;
+        audio.style.display = 'none';
+        document.body.appendChild(audio);
+        peer.audio = audio;
+      }
+      audio.srcObject = evt.streams?.[0] || new MediaStream([evt.track]);
+      audio.play().then(() => { voiceUnlock.classList.add('hidden'); }).catch(() => {
+        voiceUnlock.classList.remove('hidden');
+        toast('Нажми «🔊 Звук» для включения голоса собеседника.');
+      });
+    };
+  }
+  return peer;
+}
+async function voiceOfferTo(peerId) {
+  if (!microphoneStream || !joined || peerId === myId || !socket.connected || voiceOutbound.has(peerId)) return;
+  if (!(state?.members || []).some(m => m.id === peerId)) return;
+  const session = voiceSession();
+  const peer = voicePeerConnection(peerId, 'sender', session);
+  voiceOutbound.set(peerId, peer);
+  try {
+    for (const track of microphoneStream.getAudioTracks()) peer.pc.addTrack(track, microphoneStream);
+    const offer = await peer.pc.createOffer();
+    await peer.pc.setLocalDescription(offer);
+    if (voiceOutbound.get(peerId) !== peer) return;
+    voiceSignal(peerId, { type: 'offer', lane: 'sender', session, sdp: offer.sdp });
+  } catch (e) { voiceCloseOutbound(peerId); console.warn('Voice offer:', e); toast('Не удалось начать передачу голоса'); }
+}
+function syncVoicePeers(members) {
+  if (!microphoneStream || !joined) return;
+  const active = new Set(members.map(m => m.id));
+  for (const id of voiceOutbound.keys()) if (!active.has(id)) voiceCloseOutbound(id);
+  for (const member of members) {
+    if (member.id !== myId && !voiceOutbound.has(member.id)) voiceOfferTo(member.id);
+  }
+}
+function stopMicrophone(announce = true) {
+  const wasOn = Boolean(microphoneStream);
+  const stream = microphoneStream;
+  microphoneStream = null;
+  if (stream) for (const track of stream.getTracks()) { track.onended = null; track.stop(); }
+  for (const id of [...voiceOutbound.keys()]) voiceCloseOutbound(id);
+  if (announce && wasOn && joined) socket.emit('voice:status', { enabled: false });
+  voiceButtonState();
+}
+voiceButton.addEventListener('click', async () => {
+  if (!joined) return toast('Сначала войди в комнату.');
+  if (microphoneBusy) return;
+  if (microphoneStream) { stopMicrophone(); toast('Микрофон выключен'); return; }
+  if (!navigator.mediaDevices?.getUserMedia || !window.RTCPeerConnection || !window.isSecureContext)
+    return toast('Для микрофона нужен HTTPS и совместимый браузер.');
+  microphoneBusy = true;
+  voiceButton.disabled = true;
+  try {
+    // The browser asks for microphone permission from this real user click only.
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false
+    });
+    microphoneStream = stream;
+    stream.getAudioTracks()[0].onended = () => stopMicrophone();
+    voiceButtonState();
+    socket.emit('voice:status', { enabled: true });
+    for (const member of state?.members || []) if (member.id !== myId) voiceOfferTo(member.id);
+    // iOS may permit remote audio autoplay once the microphone is capturing.
+    for (const peer of voiceInbound.values()) peer.audio?.play().catch(() => voiceUnlock.classList.remove('hidden'));
+    toast('Микрофон включён. Лучше использовать наушники.');
+  } catch (error) {
+    if (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError') toast('Доступ запрещён. Разреши микрофон в настройках сайта браузера.');
+    else if (error.name === 'NotFoundError') toast('Микрофон не найден. Проверь подключение.');
+    else toast('Не удалось включить микрофон: ' + (error.message || error.name));
+  } finally { microphoneBusy = false; voiceButton.disabled = false; }
+});
+voiceUnlock.addEventListener('click', () => {
+  Promise.all([...voiceInbound.values()].map(peer => peer.audio?.play().catch(() => {})))
+    .then(() => { voiceUnlock.classList.add('hidden'); });
+});
+socket.on('voice:signal', async ({ from, data } = {}) => {
+  if (!joined || !from || !data || !['offer','answer','candidate'].includes(data.type)) return;
+  try {
+    if (data.type === 'offer' && data.lane === 'sender') {
+      if (!state?.members?.some(m => m.id === from)) return;
+      voiceCloseInbound(from);
+      const peer = voicePeerConnection(from, 'receiver', data.session, true);
+      voiceInbound.set(from, peer);
+      const earlyKey = `${from}/${data.session}`;
+      peer.pending.push(...(voiceEarlyCandidates.get(earlyKey) || []));
+      voiceEarlyCandidates.delete(earlyKey);
+      await peer.pc.setRemoteDescription({ type: 'offer', sdp: data.sdp });
+      await voiceFlush(peer);
+      const answer = await peer.pc.createAnswer();
+      await peer.pc.setLocalDescription(answer);
+      voiceSignal(from, { type: 'answer', lane: 'receiver', session: data.session, sdp: answer.sdp });
+    } else if (data.type === 'answer' && data.lane === 'receiver') {
+      const peer = voiceOutbound.get(from);
+      if (!peer || peer.session !== data.session) return;
+      await peer.pc.setRemoteDescription({ type: 'answer', sdp: data.sdp });
+      await voiceFlush(peer);
+    } else if (data.type === 'candidate' && data.candidate) {
+      const peer = data.lane === 'sender' ? voiceInbound.get(from) : voiceOutbound.get(from);
+      if (!peer || peer.session !== data.session) {
+        if (data.lane === 'sender' && state?.members?.some(m => m.id === from)) {
+          const key = `${from}/${data.session}`;
+          const list = voiceEarlyCandidates.get(key) || [];
+          if (list.length < 32) list.push(data.candidate);
+          voiceEarlyCandidates.set(key, list);
+        }
+        return;
+      }
+      if (peer.pc.remoteDescription) await peer.pc.addIceCandidate(data.candidate);
+      else peer.pending.push(data.candidate);
+    }
+  } catch (e) { console.warn('Voice signaling:', e); toast('Ошибка подключения голосового чата'); }
+});
+socket.on('voice:peer-muted', ({peerId} = {}) => { if (peerId) voiceCloseInbound(peerId); });
+socket.on('voice:peer-left', ({peerId} = {}) => { if (peerId) closeVoiceForMember(peerId); });
+window.addEventListener('pagehide', () => stopMicrophone(false));
+voiceButtonState();

@@ -49,7 +49,7 @@ function mediaSnapshot(room) {
 function publicState(room) {
   return {
     id: room.id,
-    members: [...room.members].map(([id, value]) => ({ id, name: value.name })),
+    members: [...room.members].map(([id, value]) => ({ id, name: value.name, voice: Boolean(value.voice) })),
     media: mediaSnapshot(room),
     shareOwner: room.shareOwner,
     chat: room.chat
@@ -103,6 +103,7 @@ io.on('connection', socket => {
       socket.to(room.id).emit('share:ended');
     }
     socket.to(room.id).emit('rtc:peer-left', { peerId: socket.id });
+    socket.to(room.id).emit('voice:peer-left', { peerId: socket.id });
     room.touched = Date.now();
     notifyState(room);
     roomId = null;
@@ -116,7 +117,7 @@ io.on('connection', socket => {
     if (!room) { room = createRoom(rawId); rooms.set(rawId, room); }
     if (room.members.size >= 8) return respond({ ok: false, error: 'В комнате уже 8 человек.' });
     roomId = rawId;
-    room.members.set(socket.id, { name });
+    room.members.set(socket.id, { name, voice: false });
     room.touched = Date.now();
     socket.join(rawId);
     respond({ ok: true, state: publicState(room), you: socket.id });
@@ -206,6 +207,27 @@ io.on('connection', socket => {
     if (!data || !['offer', 'answer', 'candidate'].includes(data.type)) return;
     if (JSON.stringify(data).length > 16000) return;
     io.to(target).emit('rtc:signal', { from: socket.id, data });
+  });
+  // Audio-only, opt-in, room-scoped WebRTC signaling. The server never receives microphone samples.
+  socket.on('voice:status', ({ enabled } = {}) => {
+    const room = currentRoom();
+    if (!room || typeof enabled !== 'boolean') return;
+    const member = room.members.get(socket.id);
+    if (!member) return;
+    member.voice = enabled;
+    notifyState(room);
+    if (!enabled) socket.to(room.id).emit('voice:peer-muted', { peerId: socket.id });
+  });
+  socket.on('voice:signal', ({ target, data } = {}) => {
+    const room = currentRoom();
+    if (!room || !room.members.has(socket.id) || typeof target !== 'string' ||
+        target === socket.id || !room.members.has(target)) return;
+    if (!data || !['offer', 'answer', 'candidate'].includes(data.type)) return;
+    if (!['sender', 'receiver'].includes(data.lane)) return;
+    if (typeof data.session !== 'string' || !/^[a-z0-9-]{6,48}$/i.test(data.session)) return;
+    if (data.type === 'offer' && (!room.members.get(socket.id).voice || data.lane !== 'sender')) return;
+    if (JSON.stringify(data).length > 16000) return;
+    io.to(target).emit('voice:signal', { from: socket.id, data });
   });
   socket.on('disconnect', cleanLeave);
 });

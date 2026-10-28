@@ -10,9 +10,9 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/styles.css?v=4">
+  <link rel="stylesheet" href="/styles.css?v=5">
   <script src="/socket.io/socket.io.js" defer></script>
-  <script src="/app.js?v=5" defer></script>
+  <script src="/app.js?v=6" defer></script>
 </head>
 <body>
   <svg class="svg-sprites" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -29,6 +29,8 @@
     <symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M9 9a3 3 0 0 1 6 0c0 2-3 2-3 4m0 4h.01"/></symbol>
     <symbol id="i-message" viewBox="0 0 24 24"><path d="M20 11a8 8 0 0 1-8 8 9 9 0 0 1-4-.9L3 20l1.9-5A8 8 0 1 1 20 11Z"/></symbol>
     <symbol id="i-spark" viewBox="0 0 24 24"><path d="m12 2 2.3 7.7L22 12l-7.7 2.3L12 22l-2.3-7.7L2 12l7.7-2.3L12 2Z"/></symbol>
+    <symbol id="i-volume" viewBox="0 0 24 24"><path d="M11 5 6 9H3v6h3l5 4V5ZM15 9a5 5 0 0 1 0 6M18 6a9 9 0 0 1 0 12"/></symbol>
+    <symbol id="i-volume-off" viewBox="0 0 24 24"><path d="M11 5 6 9H3v6h3l5 4V5ZM16 9l6 6m0-6-6 6"/></symbol>
     <symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v4m-4 0h8"/></symbol>
     <symbol id="i-smile" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M8 14q4 5 8 0M8 9h.01M16 9h.01"/></symbol>
     <symbol id="i-at" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M16 8v6a3 3 0 0 0 6 0v-2a10 10 0 1 0-4 8"/></symbol>
@@ -65,8 +67,8 @@
             </div>
             <div id="youtubeWrap" class="player-media hidden"><div id="ytPlayer"></div></div>
             <div id="vimeoWrap" class="player-media hidden"><div id="vimeoPlayer"></div></div>
-            <video id="directPlayer" class="player-media hidden" controls playsinline preload="metadata"></video>
-            <video id="screenPlayer" class="player-media hidden" playsinline autoplay controls></video>
+            <video id="directPlayer" class="player-media hidden" playsinline preload="metadata"></video>
+            <video id="screenPlayer" class="player-media hidden" playsinline autoplay></video>
             <div id="screenWaiting" class="screen-waiting hidden"><span class="spinner"></span><h2>Подключаем трансляцию…</h2><p>Трансляция скоро появится у остальных участников.</p></div>
             <div id="videoUnlock" class="video-unlock hidden"><button id="unlockPlay" type="button" class="btn btn-primary"><svg class="icon solid"><use href="#i-play"/></svg> Нажать, чтобы смотреть</button><span>iPhone и другие браузеры иногда запрещают автозапуск</span></div>
             <div class="cinema-overlay-top"><span id="playerBadge" class="player-badge"><span class="red-dot"></span> WATCH PARTY</span><span class="theatre-users"><svg class="icon"><use href="#i-users"/></svg> <span id="stageViewers">0</span></span></div>
@@ -78,6 +80,7 @@
             <span id="globalTimestamp" class="transport-time">00:00</span>
             <input id="timelineSeek" class="timeline" type="range" min="0" max="100" value="0" step="0.1" aria-label="Общая перемотка видео">
             <span id="globalDuration" class="transport-time duration">00:00</span>
+            <button id="videoSound" class="icon-btn" type="button" aria-label="Отключить звук видео" title="Звук видео"><svg class="icon"><use href="#i-volume"/></svg></button>
             <button id="fullScreen" class="icon-btn" aria-label="Полный экран" title="Полный экран"><svg class="icon"><use href="#i-expand"/></svg></button>
           </div>
 
@@ -87,6 +90,7 @@
             <span class="source-label"><svg class="icon"><use href="#i-link"/></svg> Ссылка</span>
             <div class="source-input-box"><input id="videoUrl" type="url" placeholder="YouTube, Vimeo, MP4 или HLS (.m3u8)…" autocomplete="off" spellcheck="false" aria-label="Ссылка на видео"></div>
             <button id="loadVideo" type="button" class="btn btn-primary"><svg class="icon solid"><use href="#i-play"/></svg><span>Смотреть</span></button>
+            <button id="cleanTest" type="button" class="btn btn-outline" title="Вставить чистое тестовое видео">Тест без надписей</button>
             <button id="screenShare" type="button" class="btn btn-outline" title="Показать фильм из другой вкладки"><svg class="icon"><use href="#i-monitor"/></svg><span>Показ экрана</span></button>
           </div>
           </details>
@@ -109,7 +113,7 @@
           <div class="rave-chat-head"><div><span class="rave-chat-title">Чат</span><span class="rave-chat-subtitle">общайтесь, не отрываясь от фильма</span></div><div class="rave-live-dot"><span></span> LIVE</div></div>
           <div class="chat-scroll" id="chatScroll" role="log" aria-label="Сообщения комнаты" aria-live="polite"><div id="chatMessages" class="chat-messages"><div class="chat-empty"><strong>together.</strong><p>Сообщения участников появятся здесь.</p></div></div></div>
           <div class="reactions" aria-label="Быстрые реакции"><span class="reaction-caption">Реакции</span><button type="button" data-reaction="❤️" aria-label="Сердечко">❤️</button><button type="button" data-reaction="😂" aria-label="Смех">😂</button><button type="button" data-reaction="😮" aria-label="Удивление">😮</button><button type="button" data-reaction="🔥" aria-label="Огонь">🔥</button></div>
-          <form class="chat-form" id="chatForm" enterkeyhint="send"><button type="button" id="voiceInput" class="rave-form-mark" aria-label="Голосовой ввод" title="Голосовой ввод"><svg class="icon"><use href="#i-mic"/></svg></button><input id="chatInput" type="text" maxlength="800" autocomplete="off" placeholder="Чат" disabled aria-label="Написать сообщение"><button type="button" class="composer-action" id="mentionButton" aria-label="Упомянуть участника" title="Упоминание"><svg class="icon"><use href="#i-at"/></svg></button><button type="button" class="composer-action" id="emojiButton" aria-label="Выбрать реакцию" title="Реакции"><svg class="icon"><use href="#i-smile"/></svg></button><button type="button" class="composer-action" id="chatShare" aria-label="Поделиться комнатой" title="Ссылка-приглашение"><svg class="icon"><use href="#i-link"/></svg></button><button type="submit" id="chatSend" disabled aria-label="Отправить"><svg class="icon"><use href="#i-send"/></svg></button></form>
+          <form class="chat-form" id="chatForm" enterkeyhint="send"><button type="button" id="voiceInput" class="rave-form-mark" aria-label="Включить микрофон" aria-pressed="false" title="Включить микрофон для разговора"><svg class="icon"><use href="#i-mic"/></svg></button><span id="micLabel" class="mic-label" aria-live="polite">Микрофон выкл.</span><button id="enableVoiceAudio" type="button" class="voice-audio-unlock hidden" title="Включить звук собеседника">🔊 Звук</button><input id="chatInput" type="text" maxlength="800" autocomplete="off" placeholder="Чат" disabled aria-label="Написать сообщение"><button type="button" class="composer-action" id="mentionButton" aria-label="Упомянуть участника" title="Упоминание"><svg class="icon"><use href="#i-at"/></svg></button><button type="button" class="composer-action" id="emojiButton" aria-label="Выбрать реакцию" title="Реакции"><svg class="icon"><use href="#i-smile"/></svg></button><button type="button" class="composer-action" id="chatShare" aria-label="Поделиться комнатой" title="Ссылка-приглашение"><svg class="icon"><use href="#i-link"/></svg></button><button type="submit" id="chatSend" disabled aria-label="Отправить"><svg class="icon"><use href="#i-send"/></svg></button></form>
         </aside>
       </section>
     </main>

@@ -331,3 +331,19 @@ body.chat-open .side-panel,body.chat-collapsed .side-panel{display:flex;transfor
  .source-details:not([open]){width:0;height:0;min-width:0;max-width:0;margin:0;padding:0;border:0;box-shadow:none;background:transparent;pointer-events:none}
  .source-details:not([open]) summary{display:none}
 }
+
+/* Together 5 — single progress bar and opt-in voice chat. */
+#directPlayer::-webkit-media-controls,#screenPlayer::-webkit-media-controls{display:none!important}
+#directPlayer,#screenPlayer{outline:none}
+#videoSound{display:grid;place-items:center}
+#videoSound:disabled{opacity:.28}
+.mic-label{font-size:10px;color:#eecff2;white-space:nowrap;max-width:100px;overflow:hidden;text-overflow:ellipsis}
+.voice-audio-unlock{flex-shrink:0;border:1px solid #cbaeff!important;background:#4a2d70!important;border-radius:10px!important;color:white!important;font-size:10px!important;width:auto!important;height:32px!important;padding:0 8px!important}
+.rave-room-panel .chat-form #voiceInput.voice-on{background:#e94d8b!important;color:white!important;box-shadow:0 0 0 3px #e94d8b39!important}
+@media (max-width:1200px){.mic-label{display:none}}
+@media (max-width:530px){#videoSound{width:26px}.voice-audio-unlock{font-size:9px!important;max-width:68px}}
+
+.watch-column:fullscreen{display:flex;align-items:center;justify-content:center;background:#000;width:100%;height:100%;max-height:none}
+.watch-column:fullscreen .cinema-frame{aspect-ratio:unset;max-height:100vh;height:100%;width:100%;object-fit:contain}
+.watch-column:fullscreen .transport{display:flex;z-index:99;position:absolute;bottom:12px;left:12px;right:12px;opacity:1}
+.watch-column:fullscreen .source-details,.watch-column:fullscreen .footer-tools{display:none}
